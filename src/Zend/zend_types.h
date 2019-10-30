@@ -120,6 +120,14 @@ typedef union _zend_value {
 
 struct _zval_struct {
 	zend_value        value;			/* value */
+	// u1.type_info = 0x 00 00 00 04
+	// 大部分平台是小端
+	// little endian
+	//                   ^^high address
+	//                            ^^low address
+	// big endian
+	//                   ^^low address
+	//                            ^^high address
 	union {
 		struct {
 			ZEND_ENDIAN_LOHI_4(

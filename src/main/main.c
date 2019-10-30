@@ -2135,7 +2135,7 @@ int php_module_startup(sapi_module_struct *sf, zend_module_entry *additional_mod
 	memset(&core_globals, 0, sizeof(core_globals));
 	php_startup_ticks();
 #endif
-	gc_globals_ctor();
+	gc_globals_ctor(); // 初始化gc_globals
 
 	zuf.error_function = php_error_cb;
 	zuf.printf_function = php_printf;

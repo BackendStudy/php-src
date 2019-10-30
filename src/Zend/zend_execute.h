@@ -193,12 +193,12 @@ static zend_always_inline zend_execute_data *zend_vm_stack_push_call_frame_ex(ui
 		return call;
 	}
 }
-
+// 计算栈大小
 static zend_always_inline uint32_t zend_vm_calc_used_stack(uint32_t num_args, zend_function *func)
 {
-	uint32_t used_stack = ZEND_CALL_FRAME_SLOT + num_args;
+	uint32_t used_stack = ZEND_CALL_FRAME_SLOT + num_args; // execute_data自身包括参数占用多少个zval
 
-	if (EXPECTED(ZEND_USER_CODE(func->type))) {
+	if (EXPECTED(ZEND_USER_CODE(func->type))) { // cv tmp变量
 		used_stack += func->op_array.last_var + func->op_array.T - MIN(func->op_array.num_args, num_args);
 	}
 	return used_stack * sizeof(zval);

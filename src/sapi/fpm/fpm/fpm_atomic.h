@@ -150,6 +150,8 @@ static inline int fpm_spinlock(atomic_t *lock, int try_once) /* {{{ */
 
 	for (;;) {
 
+		// bool __sync_bool_compare_and_swap (type *ptr, type oldval type newval, ...)
+		// 比较*ptr与oldval的值，如果两者相等，则将newval更新到*ptr并返回true
 		if (atomic_cmp_set(lock, 0, 1)) {
 			break;
 		}

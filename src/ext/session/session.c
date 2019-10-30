@@ -2277,7 +2277,6 @@ static PHP_FUNCTION(session_gc)
 }
 /* }}} */
 
-
 /* {{{ proto void session_write_close(void)
    Write session data and end session */
 static PHP_FUNCTION(session_write_close)

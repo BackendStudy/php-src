@@ -46,7 +46,7 @@
 #define GC_WHITE  0x8000
 #define GC_GREY   0x4000
 #define GC_PURPLE 0xc000
-
+// 最高两位表示颜色, 黑色为00, 白色为10, 紫色为11, 灰色为01
 #define GC_ADDRESS(v) \
 	((v) & ~GC_COLOR)
 #define GC_INFO_GET_COLOR(v) \

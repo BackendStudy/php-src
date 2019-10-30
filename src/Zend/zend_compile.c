@@ -226,7 +226,7 @@ static zend_always_inline zend_uchar zend_lookup_builtin_type_by_name(const zend
 }
 /* }}} */
 
-
+// 开始一个新的上下文, 保存旧的上下文在prev_context中
 void zend_oparray_context_begin(zend_oparray_context *prev_context) /* {{{ */
 {
 	*prev_context = CG(context);
@@ -243,7 +243,7 @@ void zend_oparray_context_begin(zend_oparray_context *prev_context) /* {{{ */
 	CG(context).labels = NULL;
 }
 /* }}} */
-
+// 还原上下文
 void zend_oparray_context_end(zend_oparray_context *prev_context) /* {{{ */
 {
 	if (CG(context).brk_cont_array) {
@@ -395,13 +395,13 @@ ZEND_API zend_bool zend_is_compiling(void) /* {{{ */
 	return CG(in_compilation);
 }
 /* }}} */
-
+// 获取临时变量的位置
 static uint32_t get_temporary_variable(zend_op_array *op_array) /* {{{ */
 {
 	return (uint32_t)op_array->T++;
 }
 /* }}} */
-
+// 在op_array.vars里寻找变量, 没有则加入, 返回相对于execute_data头部的偏移量
 static int lookup_cv(zend_op_array *op_array, zend_string* name) /* {{{ */{
 	int i = 0;
 	zend_ulong hash_value = zend_string_hash_val(name);
@@ -1054,7 +1054,7 @@ ZEND_API void function_add_ref(zend_function *function) /* {{{ */
 	}
 }
 /* }}} */
-
+// lcname=>function加入function_table, op_array.refcount++
 ZEND_API int do_bind_function(const zend_op_array *op_array, const zend_op *opline, HashTable *function_table, zend_bool compile_time) /* {{{ */
 {
 	zend_function *function, *new_function;
@@ -1176,7 +1176,7 @@ ZEND_API zend_class_entry *do_bind_inherited_class(const zend_op_array *op_array
 
 void zend_do_early_binding(void) /* {{{ */
 {
-	zend_op *opline = &CG(active_op_array)->opcodes[CG(active_op_array)->last-1];
+	zend_op *opline = &CG(active_op_array)->opcodes[CG(active_op_array)->last-1]; // 获取最后一条opcode
 	HashTable *table;
 
 	while (opline->opcode == ZEND_TICKS && opline > CG(active_op_array)->opcodes) {
@@ -3277,7 +3277,7 @@ ZEND_API zend_uchar zend_get_call_op(const zend_op *init_op, zend_function *fbc)
 	return ZEND_DO_FCALL;
 }
 /* }}} */
-
+// 确定栈大小init_fcall.op1.num, 增加do_call opcode
 void zend_compile_call_common(znode *result, zend_ast *args_ast, zend_function *fbc) /* {{{ */
 {
 	zend_op *opline;
@@ -3760,7 +3760,7 @@ void zend_compile_call(znode *result, zend_ast *ast, uint32_t type) /* {{{ */
 			zend_compile_dynamic_call(result, &name_node, args_ast);
 			return;
 		}
-
+		// 编译特殊的函数, strlen, is_array..., 这些函数都不需要php执行栈
 		if (zend_try_compile_special_func(result, lcname,
 				zend_ast_get_list(args_ast), fbc, type) == SUCCESS
 		) {
@@ -3771,9 +3771,9 @@ void zend_compile_call(znode *result, zend_ast *ast, uint32_t type) /* {{{ */
 
 		zval_ptr_dtor(&name_node.u.constant);
 		ZVAL_NEW_STR(&name_node.u.constant, lcname);
-
+		// opcode init_call, op2是函数名
 		opline = zend_emit_op(NULL, ZEND_INIT_FCALL, NULL, &name_node);
-		zend_alloc_cache_slot(opline->op2.constant);
+		zend_alloc_cache_slot(opline->op2.constant);// 分配运行时缓存偏移量, u2.cache_slot = op_array_cache++
 
 		zend_compile_call_common(result, args_ast, fbc);
 	}
@@ -4191,7 +4191,7 @@ void zend_compile_return(zend_ast *ast) /* {{{ */
 		by_ref = 0;
 	}
 
-	if (!expr_ast) {
+	if (!expr_ast) { // 没有内容默认为return NULL
 		expr_node.op_type = IS_CONST;
 		ZVAL_NULL(&expr_node.u.constant);
 	} else if (by_ref && zend_is_variable(expr_ast) && !zend_is_call(expr_ast)) {
@@ -5087,7 +5087,7 @@ static void zend_compile_typename(zend_ast *ast, zend_arg_info *arg_info) /* {{{
 	}
 }
 /* }}} */
-
+// 编译函数参数列表, 每个参数产生一个recv的opcode, op1为空, op2为默认参数, result为变量
 void zend_compile_params(zend_ast *ast, zend_ast *return_type_ast) /* {{{ */
 {
 	zend_ast_list *list = zend_ast_get_list(ast);
@@ -5122,7 +5122,7 @@ void zend_compile_params(zend_ast *ast, zend_ast *return_type_ast) /* {{{ */
 		if (list->children == 0) {
 			return;
 		}
-		arg_infos = safe_emalloc(sizeof(zend_arg_info), list->children, 0);
+		arg_infos = safe_emalloc(sizeof(zend_arg_info), list->children, 0); // 防止溢出
 	}
 
 	for (i = 0; i < list->children; ++i) {
@@ -5146,7 +5146,7 @@ void zend_compile_params(zend_ast *ast, zend_ast *return_type_ast) /* {{{ */
 
 		var_node.op_type = IS_CV;
 		var_node.u.op.var = lookup_cv(CG(active_op_array), zend_string_copy(name));
-
+		// 因为是参数列表, 所以不可能会出现相同名字的变量
 		if (EX_VAR_TO_NUM(var_node.u.op.var) != i) {
 			zend_error_noreturn(E_COMPILE_ERROR, "Redefinition of parameter $%s",
 				ZSTR_VAL(name));
@@ -5522,7 +5522,7 @@ void zend_begin_method_decl(zend_op_array *op_array, zend_string *name, zend_boo
 	zend_string_release(lcname);
 }
 /* }}} */
-
+// 函数rtd key => op_array加入function table, lcname和rtdkey先后加入op_array.literals, 增加opcode ZEND_DECLARE_FUNCTION, op1为lcname
 static void zend_begin_func_decl(znode *result, zend_op_array *op_array, zend_ast_decl *decl) /* {{{ */
 {
 	zend_ast *params_ast = decl->child[0];
@@ -5642,7 +5642,7 @@ void zend_compile_func_decl(znode *result, zend_ast *ast) /* {{{ */
 	CG(zend_lineno) = decl->end_lineno;
 
 	zend_do_extended_info();
-	zend_emit_final_return(0);
+	zend_emit_final_return(0); // 不管有没有加return语句, 都会加一条opcode返回NULL
 
 	pass_two(CG(active_op_array));
 	zend_oparray_context_end(&orig_oparray_context);
@@ -6694,7 +6694,7 @@ void zend_compile_binary_op(znode *result, zend_ast *ast) /* {{{ */
 	zend_compile_expr(&left_node, left_ast);
 	zend_compile_expr(&right_node, right_ast);
 
-	if (left_node.op_type == IS_CONST && right_node.op_type == IS_CONST) {
+	if (left_node.op_type == IS_CONST && right_node.op_type == IS_CONST) { // 如果两个都是字面量, 直接运算
 		if (zend_try_ct_eval_binary_op(&result->u.constant, opcode,
 				&left_node.u.constant, &right_node.u.constant)
 		) {

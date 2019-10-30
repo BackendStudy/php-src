@@ -110,7 +110,7 @@
 # endif
 #  if defined(_SC_PAGESIZE) || (_SC_PAGE_SIZE)
 #    define REAL_PAGE_SIZE _real_page_size
-static size_t _real_page_size = ZEND_MM_PAGE_SIZE;
+static size_t _real_page_size = ZEND_MM_PAGE_SIZE; // => sysconf(_SC_PAGE_SIZE)
 #  endif
 #endif
 
@@ -287,7 +287,7 @@ struct _zend_mm_chunk {
 	uint32_t           num;
 	char               reserve[64 - (sizeof(void*) * 3 + sizeof(uint32_t) * 3)];
 	zend_mm_heap       heap_slot;               /* used only in main chunk */
-	zend_mm_page_map   free_map;                /* 512 bits or 64 bytes */
+	zend_mm_page_map   free_map;                /* 512 bits or 64 bytes */ // 8*uint64
 	zend_mm_page_info  map[ZEND_MM_PAGES];      /* 2 KB = 512 * 4 */
 };
 
@@ -707,7 +707,7 @@ static zend_always_inline int zend_mm_bitset_is_free_range(zend_mm_bitset *bitse
 static void *zend_mm_chunk_alloc_int(size_t size, size_t alignment)
 {
 	void *ptr = zend_mm_mmap(size);
-
+	// 直接用mmap分配一次,如果刚好2M对齐,那么返回
 	if (ptr == NULL) {
 		return NULL;
 	} else if (ZEND_MM_ALIGNED_OFFSET(ptr, alignment) == 0) {
@@ -720,6 +720,7 @@ static void *zend_mm_chunk_alloc_int(size_t size, size_t alignment)
 
 		/* chunk has to be aligned */
 		zend_mm_munmap(ptr, size);
+		// 因为mmap分配内存都是按照内存页面大小的倍数(一般是4k)分配的,地址也是按页面大小对齐的,所以其实只需要分配(2M + 2M - page_size)就一定可以拿到以2M对齐的内存地址
 		ptr = zend_mm_mmap(size + alignment - REAL_PAGE_SIZE);
 #ifdef _WIN32
 		offset = ZEND_MM_ALIGNED_OFFSET(ptr, alignment);
@@ -732,13 +733,23 @@ static void *zend_mm_chunk_alloc_int(size_t size, size_t alignment)
 		}
 		return ptr;
 #else
+		// 获取离2M对齐地址的偏移量
+		// |------|------|------| va
+		//    |------------| ptr
+		// |--| offset
 		offset = ZEND_MM_ALIGNED_OFFSET(ptr, alignment);
 		if (offset != 0) {
 			offset = alignment - offset;
+		// |------|------|------| va
+		//    |------------| ptr
+		//    |---| offset
+		// 	      |--------| unmap后ptr
+	    // |--| alignment
 			zend_mm_munmap(ptr, offset);
 			ptr = (char*)ptr + offset;
 			alignment -= offset;
 		}
+		// 如果alignment小于等于page size,不需要处理了
 		if (alignment > REAL_PAGE_SIZE) {
 			zend_mm_munmap((char*)ptr + size, alignment - REAL_PAGE_SIZE);
 		}
@@ -908,6 +919,7 @@ static void *zend_mm_alloc_pages(zend_mm_heap *heap, uint32_t pages_count ZEND_F
 #endif
 		} else {
 			/* Best-Fit Search */
+			// 找到长度最适合的位置
 			int best = -1;
 			uint32_t best_len = ZEND_MM_PAGES;
 			uint32_t free_tail = chunk->free_tail;
@@ -917,6 +929,7 @@ static void *zend_mm_alloc_pages(zend_mm_heap *heap, uint32_t pages_count ZEND_F
 
 			while (1) {
 				/* skip allocated blocks */
+				// 这一页全部查完了，下一页
 				while (tmp == (zend_mm_bitset)-1) {
 					i += ZEND_MM_BITSET_LEN;
 					if (i == ZEND_MM_PAGES) {
@@ -932,16 +945,20 @@ static void *zend_mm_alloc_pages(zend_mm_heap *heap, uint32_t pages_count ZEND_F
 				/* find first 0 bit */
 				page_num = i + zend_mm_bitset_nts(tmp);
 				/* reset bits from 0 to "bit" */
+				//  把tmp中出现的第一个0前面的全面清0，因为下面开始要计算从page_num开始（第一个0）第一个出现1的位置了
 				tmp &= tmp + 1;
 				/* skip free blocks */
+				// 如果当前bits后面的全部都未分配
 				while (tmp == 0) {
 					i += ZEND_MM_BITSET_LEN;
 					if (i >= free_tail || i == ZEND_MM_PAGES) {
 						len = ZEND_MM_PAGES - page_num;
 						if (len >= pages_count && len < best_len) {
+							// free_tail以后的位置都未分配
 							chunk->free_tail = page_num + pages_count;
 							goto found;
 						} else {
+							// 如果当前位置不够好，找原来保存的最佳位置
 							/* set accurate value */
 							chunk->free_tail = page_num;
 							if (best > 0) {
@@ -965,13 +982,16 @@ static void *zend_mm_alloc_pages(zend_mm_heap *heap, uint32_t pages_count ZEND_F
 					}
 				}
 				/* set bits from 0 to "bit" */
+				// 将这段bit变成1
 				tmp |= tmp - 1;
 			}
 		}
 
 not_found:
+		// 如果只有main_chunk
 		if (chunk->next == heap->main_chunk) {
 get_chunk:
+			// 如果有缓存chunk,get it
 			if (heap->cached_chunks) {
 				heap->cached_chunks_count--;
 				chunk = heap->cached_chunks;
@@ -1029,12 +1049,14 @@ get_chunk:
 			len = ZEND_MM_PAGES - ZEND_MM_FIRST_PAGE;
 			goto found;
 		} else {
+			// 找到新的chunk再来一遍
 			chunk = chunk->next;
 			steps++;
 		}
 	}
 
 found:
+	// 找了超过两个chunk,并且同时分配的页数不多,说明前面chunk空间不足了,把当前有空间的chunk移动到main_chunk后面,也就是链表的开头
 	if (steps > 2 && pages_count < 8) {
 		/* move chunk into the head of the linked-list */
 		chunk->prev->next = chunk->next;
@@ -1046,8 +1068,11 @@ found:
 	}
 	/* mark run as allocated */
 	chunk->free_pages -= pages_count;
+	// 在free_map里把用了的那些page标为1
 	zend_mm_bitset_set_range(chunk->free_map, page_num, pages_count);
+	// 当前页标为large: 0x40000000 | pages_count
 	chunk->map[page_num] = ZEND_MM_LRUN(pages_count);
+	// free_tail记录着最后一个使用的位置,free_tail以后的位置都未分配,到了free_tail的位置了,更新下
 	if (page_num == chunk->free_tail) {
 		chunk->free_tail = page_num + pages_count;
 	}
@@ -1081,7 +1106,7 @@ static zend_always_inline void zend_mm_delete_chunk(zend_mm_heap *heap, zend_mm_
 	if (heap->chunks_count + heap->cached_chunks_count < heap->avg_chunks_count + 0.1
 	 || (heap->chunks_count == heap->last_chunks_delete_boundary
 	  && heap->last_chunks_delete_count >= 4)) {
-		/* delay deletion */
+		/* delay deletion */ // 加入cached_chunks
 		heap->cached_chunks_count++;
 		chunk->next = heap->cached_chunks;
 		heap->cached_chunks = chunk;
@@ -1170,10 +1195,41 @@ static zend_always_inline int zend_mm_small_size_to_bit(int size)
 #ifndef MIN
 # define MIN(a, b) (((a) < (b)) ? (a) : (b))
 #endif
-
+// 找到size对应的bin
 static zend_always_inline int zend_mm_small_size_to_bin(size_t size)
 {
 #if 0
+	/* num, size, count, pages
+	_( 0,    8,  512, 1, x, y) \ 0-7增加8字节
+	_( 1,   16,  256, 1, x, y) \
+	_( 2,   24,  170, 1, x, y) \
+	_( 3,   32,  128, 1, x, y) \
+	_( 4,   40,  102, 1, x, y) \
+	_( 5,   48,   85, 1, x, y) \
+	_( 6,   56,   73, 1, x, y) \
+	_( 7,   64,   64, 1, x, y) \ 7-11 增加16字节
+	_( 8,   80,   51, 1, x, y) \
+	_( 9,   96,   42, 1, x, y) \
+	_(10,  112,   36, 1, x, y) \
+	_(11,  128,   32, 1, x, y) \ 11-15增加32字节
+	_(12,  160,   25, 1, x, y) \
+	_(13,  192,   21, 1, x, y) \
+	_(14,  224,   18, 1, x, y) \
+	_(15,  256,   16, 1, x, y) \ 15-19增加64字节
+	_(16,  320,   64, 5, x, y) \
+	_(17,  384,   32, 3, x, y) \
+	_(18,  448,    9, 1, x, y) \
+	_(19,  512,    8, 1, x, y) \ 19-23增加128字节
+	_(20,  640,   32, 5, x, y) \
+	_(21,  768,   16, 3, x, y) \
+	_(22,  896,    9, 2, x, y) \
+	_(23, 1024,    8, 2, x, y) \ 23-27增加256字节
+	_(24, 1280,   16, 5, x, y) \
+	_(25, 1536,    8, 3, x, y) \
+	_(26, 1792,   16, 7, x, y) \
+	_(27, 2048,    8, 4, x, y) \ 27-29增加512字节
+	_(28, 2560,    8, 5, x, y) \
+	_(29, 3072,    4, 3, x, y)*/
 	int n;
                             /*0,  1,  2,  3,  4,  5,  6,  7,  8,  9  10, 11, 12*/
 	static const int f1[] = { 3,  3,  3,  3,  3,  3,  3,  4,  5,  6,  7,  8,  9};
@@ -1187,7 +1243,7 @@ static zend_always_inline int zend_mm_small_size_to_bin(size_t size)
 
 	if (size <= 64) {
 		/* we need to support size == 0 ... */
-		return (size - !!size) >> 3;
+		return (size - !!size) >> 3; // floor(size/8),前面0-7都是按8字节增加的,正常逻辑应该是size-1,使用size-!!size是因为当size=0时,0-1就出错了
 	} else {
 		t1 = size - 1;
 		t2 = zend_mm_small_size_to_bit(t1) - 3;
@@ -1208,6 +1264,7 @@ static zend_never_inline void *zend_mm_alloc_small_slow(zend_mm_heap *heap, uint
 	zend_mm_bin *bin;
 	zend_mm_free_slot *p, *end;
 
+	// 找到可用的page
 #if ZEND_DEBUG
 	bin = (zend_mm_bin*)zend_mm_alloc_pages(heap, bin_pages[bin_num], bin_data_size[bin_num] ZEND_FILE_LINE_RELAY_CC ZEND_FILE_LINE_ORIG_RELAY_CC);
 #else
@@ -1218,23 +1275,37 @@ static zend_never_inline void *zend_mm_alloc_small_slow(zend_mm_heap *heap, uint
 		return NULL;
 	}
 
+	// 找到这个page对应的chunk地址
 	chunk = (zend_mm_chunk*)ZEND_MM_ALIGNED_BASE(bin, ZEND_MM_CHUNK_SIZE);
+	// 找到这个page相对于chunk的偏移量,算出是第几页
 	page_num = ZEND_MM_ALIGNED_OFFSET(bin, ZEND_MM_CHUNK_SIZE) / ZEND_MM_PAGE_SIZE;
+	// 0x80000000 | bin_num, efree时可以根据这个来判断释放的大小
 	chunk->map[page_num] = ZEND_MM_SRUN(bin_num);
+	// small内存相同size的第一页标志是small,后面的是small|large, more detail about small size chunk.map at zend_mm_gc
+	/* 0xc0020011
+	           ^^bin_num,确定当前page被分成的small内存规格
+			^这是当前规格的第几个page
+		 ^内存的类型: 0x4 large, 0x8 small, 0xc(0x8|0x4) small并且这种规格的内存被分配了一页以上
+	*/
+	// 如果分配的是一页以上,那么后面的也需要标记
 	if (bin_pages[bin_num] > 1) {
 		uint32_t i = 1;
 
 		do {
+			// 0x80000000 | 0x40000000 | bin_num | (i<<16)
 			chunk->map[page_num+i] = ZEND_MM_NRUN(bin_num, i);
 			i++;
 		} while (i < bin_pages[bin_num]);
 	}
 
 	/* create a linked list of elements from 1 to last */
+	// 获得最后一个element的地址
 	end = (zend_mm_free_slot*)((char*)bin + (bin_data_size[bin_num] * (bin_elements[bin_num] - 1)));
+	// 将free_slot指向第二个element,第一个等下会返回给caller
 	heap->free_slot[bin_num] = p = (zend_mm_free_slot*)((char*)bin + bin_data_size[bin_num]);
 	do {
-		p->next_free_slot = (zend_mm_free_slot*)((char*)p + bin_data_size[bin_num]);;
+		// 将后面的element串成链表,因为element最小size为8,所以可以使用element的空间存放下一个元素的指针,而且链表元素也是顺序的,可以减少内存直接访问
+		p->next_free_slot = (zend_mm_free_slot*)((char*)p + bin_data_size[bin_num]);
 #if ZEND_DEBUG
 		do {
 			zend_mm_debug_info *dbg = (zend_mm_debug_info*)((char*)p + bin_data_size[bin_num] - ZEND_MM_ALIGNED_SIZE(sizeof(zend_mm_debug_info)));
@@ -1268,7 +1339,7 @@ static zend_always_inline void *zend_mm_alloc_small(zend_mm_heap *heap, size_t s
 	} while (0);
 #endif
 
-	if (EXPECTED(heap->free_slot[bin_num] != NULL)) {
+	if (EXPECTED(heap->free_slot[bin_num] != NULL)) { // small内存缓存在free_slot上,free_slot数组里每个位置上都存着以当前位置为bin_num的相同规格尺寸的链表,链表的指针没有分配额外空间,就存在原来的数据中
 		zend_mm_free_slot *p = heap->free_slot[bin_num];
 		heap->free_slot[bin_num] = p->next_free_slot;
 		return (void*)p;
@@ -1334,13 +1405,13 @@ static zend_always_inline void *zend_mm_alloc_heap(zend_mm_heap *heap, size_t si
 
 	/* special handling for zero-size allocation */
 	size = MAX(size, 1);
-	size = ZEND_MM_ALIGNED_SIZE(size) + ZEND_MM_ALIGNED_SIZE(sizeof(zend_mm_debug_info));
+	size = ZEND_MM_ALIGNED_SIZE(size) + ZEND_MM_ALIGNED_SIZE(sizeof(zend_mm_debug_info)); // 8字节对齐后大小
 	if (UNEXPECTED(size < real_size)) {
 		zend_error_noreturn(E_ERROR, "Possible integer overflow in memory allocation (%zu + %zu)", ZEND_MM_ALIGNED_SIZE(real_size), ZEND_MM_ALIGNED_SIZE(sizeof(zend_mm_debug_info)));
 		return NULL;
 	}
 #endif
-	if (size <= ZEND_MM_MAX_SMALL_SIZE) {
+	if (size <= ZEND_MM_MAX_SMALL_SIZE) { // 3k以下为small内存
 		ptr = zend_mm_alloc_small(heap, size, ZEND_MM_SMALL_SIZE_TO_BIN(size) ZEND_FILE_LINE_RELAY_CC ZEND_FILE_LINE_ORIG_RELAY_CC);
 #if ZEND_DEBUG
 		dbg = zend_mm_get_debug_info(heap, ptr);
@@ -1351,7 +1422,7 @@ static zend_always_inline void *zend_mm_alloc_heap(zend_mm_heap *heap, size_t si
 		dbg->orig_lineno = __zend_orig_lineno;
 #endif
 		return ptr;
-	} else if (size <= ZEND_MM_MAX_LARGE_SIZE) {
+	} else if (size <= ZEND_MM_MAX_LARGE_SIZE) { // 3k 到 (2M-4k)(实际上就是一个chunk的真实容量) 为large内存
 		ptr = zend_mm_alloc_large(heap, size ZEND_FILE_LINE_RELAY_CC ZEND_FILE_LINE_ORIG_RELAY_CC);
 #if ZEND_DEBUG
 		dbg = zend_mm_get_debug_info(heap, ptr);
@@ -1362,7 +1433,7 @@ static zend_always_inline void *zend_mm_alloc_heap(zend_mm_heap *heap, size_t si
 		dbg->orig_lineno = __zend_orig_lineno;
 #endif
 		return ptr;
-	} else {
+	} else { // 一个chunk不够的为huge内存
 #if ZEND_DEBUG
 		size = real_size;
 #endif
@@ -1842,7 +1913,7 @@ static zend_mm_heap *zend_mm_init(void)
 	heap->peak = 0;
 #endif
 #if ZEND_MM_LIMIT
-	heap->limit = ((size_t)Z_L(-1) >> (size_t)Z_L(1));
+	heap->limit = ((size_t)Z_L(-1) >> (size_t)Z_L(1)); // 有符号右移, 0xffff ffff >> 1 = 0x7fff ffff
 	heap->overflow = 0;
 #endif
 #if ZEND_MM_CUSTOM
@@ -1854,7 +1925,7 @@ static zend_mm_heap *zend_mm_init(void)
 	heap->huge_list = NULL;
 	return heap;
 }
-
+// 同一批次的small内存会被尽量合并(仅当所有的都是空闲),chunk会被尽量归还(仅当所有page都是空闲时)
 ZEND_API size_t zend_mm_gc(zend_mm_heap *heap)
 {
 	zend_mm_free_slot *p, **q;
@@ -1871,29 +1942,53 @@ ZEND_API size_t zend_mm_gc(zend_mm_heap *heap)
 		return 0;
 	}
 #endif
-
+	// 如果同一批次(同一次slow page分配,意味着属于同一个chunk,同几个page)的slot都是空闲中的话,将他们从free_slot上移除
 	for (i = 0; i < ZEND_MM_BINS; i++) {
 		has_free_pages = 0;
 		p = heap->free_slot[i];
 		while (p != NULL) {
+			// 获取当前slot所属的chunk
 			chunk = (zend_mm_chunk*)ZEND_MM_ALIGNED_BASE(p, ZEND_MM_CHUNK_SIZE);
 			ZEND_MM_CHECK(chunk->heap == heap, "zend_mm_heap corrupted");
+			// 相对chunk的偏移量
 			page_offset = ZEND_MM_ALIGNED_OFFSET(p, ZEND_MM_CHUNK_SIZE);
 			ZEND_ASSERT(page_offset != 0);
+			// 属于第几页
 			page_num = (int)(page_offset / ZEND_MM_PAGE_SIZE);
+			// 获取这一页的信息
 			info = chunk->map[page_num];
 			ZEND_ASSERT(info & ZEND_MM_IS_SRUN);
+			// 如果有large标志,说明不是当前size的第一页
 			if (info & ZEND_MM_IS_LRUN) {
+				// (info & 0x01ff0000) >> 16
+				// (0xc0020011 & 0x01ff0000) >> 16
+				//       |->这是表示当前处在相同规格的第几页
+				// 获取当前规格的第一页
 				page_num -= ZEND_MM_NRUN_OFFSET(info);
+				// 获取第一页的信息
 				info = chunk->map[page_num];
 				ZEND_ASSERT(info & ZEND_MM_IS_SRUN);
 				ZEND_ASSERT(!(info & ZEND_MM_IS_LRUN));
 			}
+			// 0xc0000011 & 0x0000001f
+			//         ||->bin_num 0-29之间 1f肯定够了
 			ZEND_ASSERT(ZEND_MM_SRUN_BIN_NUM(info) == i);
+			// (info & 0x01ff0000) >> 16
+			// (0xc0000011 & 0x01ff0000) >> 16
+			// small内存的map值有两种:
+			// 1.first page:    0x80000011
+			// in this context: 0x80110011
+			//                     ^^^在这里这三位用了表示当前size的空闲页数
+			// 2.other page:    0xc0000011
+			//                     ^^^这表示当前处在当前size的第几页
+			// 空闲数量包括当前的
 			free_counter = ZEND_MM_SRUN_FREE_COUNTER(info) + 1;
-			if (free_counter == bin_elements[i]) {
+			if (free_counter == bin_elements[i]) { // 如果这个size的page都是空闲状态
 				has_free_pages = 1;
 			}
+			// 0x80000000 | i | (free_counter << 16)
+			//    ^^^空闲数量
+			//         ^^bin_num
 			chunk->map[page_num] = ZEND_MM_SRUN_EX(i, free_counter);;
 			p = p->next_free_slot;
 		}
@@ -1901,7 +1996,7 @@ ZEND_API size_t zend_mm_gc(zend_mm_heap *heap)
 		if (!has_free_pages) {
 			continue;
 		}
-
+		// 同一批次slot都是空闲状态,将这些对应的slot移除
 		q = &heap->free_slot[i];
 		p = *q;
 		while (p != NULL) {
@@ -1912,16 +2007,16 @@ ZEND_API size_t zend_mm_gc(zend_mm_heap *heap)
 			page_num = (int)(page_offset / ZEND_MM_PAGE_SIZE);
 			info = chunk->map[page_num];
 			ZEND_ASSERT(info & ZEND_MM_IS_SRUN);
-			if (info & ZEND_MM_IS_LRUN) {
+			if (info & ZEND_MM_IS_LRUN) { // get first page map info
 				page_num -= ZEND_MM_NRUN_OFFSET(info);
 				info = chunk->map[page_num];
 				ZEND_ASSERT(info & ZEND_MM_IS_SRUN);
 				ZEND_ASSERT(!(info & ZEND_MM_IS_LRUN));
 			}
 			ZEND_ASSERT(ZEND_MM_SRUN_BIN_NUM(info) == i);
-			if (ZEND_MM_SRUN_FREE_COUNTER(info) == bin_elements[i]) {
-				/* remove from cache */
-				p = p->next_free_slot;;
+			if (ZEND_MM_SRUN_FREE_COUNTER(info) == bin_elements[i]) { // 都是空闲
+				/* remove from cache */ // *current_free_slot_p = p->next_free_slot; remove current_slot
+				p = p->next_free_slot;
 				*q = p;
 			} else {
 				q = &p->next_free_slot;
@@ -1933,33 +2028,33 @@ ZEND_API size_t zend_mm_gc(zend_mm_heap *heap)
 	chunk = heap->main_chunk;
 	do {
 		i = ZEND_MM_FIRST_PAGE;
-		while (i < chunk->free_tail) {
-			if (zend_mm_bitset_is_set(chunk->free_map, i)) {
+		while (i < chunk->free_tail) { // free_tail以后的都是未分配,不用看
+			if (zend_mm_bitset_is_set(chunk->free_map, i)) { // 已分配
 				info = chunk->map[i];
-				if (info & ZEND_MM_IS_SRUN) {
+				if (info & ZEND_MM_IS_SRUN) { // 一旦我们找到有small标志的,那么它肯定是当前批次的第一页,由于上面已经处理过了,第一页的info已经加入了当前空闲个数
 					int bin_num = ZEND_MM_SRUN_BIN_NUM(info);
 					int pages_count = bin_pages[bin_num];
 
 					if (ZEND_MM_SRUN_FREE_COUNTER(info) == bin_elements[bin_num]) {
 						/* all elemens are free */
-						zend_mm_free_pages_ex(heap, chunk, i, pages_count, 0);
+						zend_mm_free_pages_ex(heap, chunk, i, pages_count, 0); // 将这些page在map和free_map里标为可用,实际上就是合并成更大块的内存
 						collected += pages_count;
 					} else {
-						/* reset counter */
+						/* reset counter */ // 空闲个数变成0
 						chunk->map[i] = ZEND_MM_SRUN(bin_num);
 					}
-					i += bin_pages[bin_num];
+					i += bin_pages[bin_num]; // 只看first page
 				} else /* if (info & ZEND_MM_IS_LRUN) */ {
-					i += ZEND_MM_LRUN_PAGES(info);
+					i += ZEND_MM_LRUN_PAGES(info); // large内存后3位表示分配出去的有几页
 				}
 			} else {
 				i++;
 			}
 		}
-		if (chunk->free_pages == ZEND_MM_PAGES - ZEND_MM_FIRST_PAGE) {
+		if (chunk->free_pages == ZEND_MM_PAGES - ZEND_MM_FIRST_PAGE) { // 整个chunk都是空闲状态的话,归还这个chunk
 			zend_mm_chunk *next_chunk = chunk->next;
 
-			zend_mm_delete_chunk(heap, chunk);
+			zend_mm_delete_chunk(heap, chunk); // add into cached chunks or free
 			chunk = next_chunk;
 		} else {
 			chunk = chunk->next;

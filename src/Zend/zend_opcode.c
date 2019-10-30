@@ -549,7 +549,7 @@ static uint32_t zend_get_brk_cont_target(const zend_op_array *op_array, const ze
 ZEND_API int pass_two(zend_op_array *op_array)
 {
 	zend_op *opline, *end;
-
+	// user code才有pass two阶段
 	if (!ZEND_USER_CODE(op_array->type)) {
 		return 0;
 	}
@@ -561,19 +561,38 @@ ZEND_API int pass_two(zend_op_array *op_array)
 			zend_llist_apply_with_argument(&zend_extensions, (llist_apply_with_arg_func_t) zend_extension_op_array_handler, op_array);
 		}
 	}
-
+	// 重新调整vars opcodes literals大小(之前分配的可能太大)
 	if (CG(context).vars_size != op_array->last_var) {
 		op_array->vars = (zend_string**) erealloc(op_array->vars, sizeof(zend_string*)*op_array->last_var);
 		CG(context).vars_size = op_array->last_var;
 	}
+	// see@lookup_cv
+//	if (op_array->last_var > CG(context).vars_size) {
+//		CG(context).vars_size += 16; /* FIXME */
+//		op_array->vars = erealloc(op_array->vars, CG(context).vars_size * sizeof(zend_string*));
+//	}
 	if (CG(context).opcodes_size != op_array->last) {
 		op_array->opcodes = (zend_op *) erealloc(op_array->opcodes, sizeof(zend_op)*op_array->last);
 		CG(context).opcodes_size = op_array->last;
 	}
+	// see@get_next_op
+//	if (next_op_num >= CG(context).opcodes_size) {
+//		CG(context).opcodes_size *= 4;
+//		op_array_alloc_ops(op_array, CG(context).opcodes_size);
+//	}
 	if (CG(context).literals_size != op_array->last_literal) {
 		op_array->literals = (zval*)erealloc(op_array->literals, sizeof(zval) * op_array->last_literal);
 		CG(context).literals_size = op_array->last_literal;
 	}
+	// see@zend_add_literal
+//	int i = op_array->last_literal;
+//	op_array->last_literal++;
+//	if (i >= CG(context).literals_size) {
+//		while (i >= CG(context).literals_size) {
+//			CG(context).literals_size += 16; /* FIXME */
+//		}
+//		op_array->literals = (zval*)erealloc(op_array->literals, CG(context).literals_size * sizeof(zval));
+//	}
 	opline = op_array->opcodes;
 	end = opline + op_array->last;
 	while (opline < end) {
@@ -646,9 +665,12 @@ ZEND_API int pass_two(zend_op_array *op_array)
 					opline->opcode = ZEND_GENERATOR_RETURN;
 				}
 				break;
-		}
-		if (opline->op1_type == IS_CONST) {
-			ZEND_PASS_TWO_UPDATE_CONSTANT(op_array, opline->op1);
+		}// 为is_const is_tmp_var和is_var划定储存位置, 转化为具体偏移量
+		// zend_execute_data最后放变量值, op_array.vars存放变量名, op_array.literals存放字面量
+		// 编译时, 通过在vars中查找变量所处的位置, 就可以知道变量内容在栈上的位置(sizeof(zend_execute_data)+offset*sizeof(zval))
+		if (opline->op1_type == IS_CONST) { // 如果是const类型, 之前这里存的是第几个位置
+			// target.constant = zend_add_literal(CG(active_op_array), &(src)->u.constant);
+			ZEND_PASS_TWO_UPDATE_CONSTANT(op_array, opline->op1); // 转化为具体偏移量
 		} else if (opline->op1_type & (IS_VAR|IS_TMP_VAR)) {
 			opline->op1.var = (uint32_t)(zend_intptr_t)ZEND_CALL_VAR_NUM(NULL, op_array->last_var + opline->op1.var);
 		}
@@ -657,10 +679,10 @@ ZEND_API int pass_two(zend_op_array *op_array)
 		} else if (opline->op2_type & (IS_VAR|IS_TMP_VAR)) {
 			opline->op2.var = (uint32_t)(zend_intptr_t)ZEND_CALL_VAR_NUM(NULL, op_array->last_var + opline->op2.var);
 		}
-		if (opline->result_type & (IS_VAR|IS_TMP_VAR)) {
+		if (opline->result_type & (IS_VAR|IS_TMP_VAR)) { //临时变量放在最后(前面是is_cv)
 			opline->result.var = (uint32_t)(zend_intptr_t)ZEND_CALL_VAR_NUM(NULL, op_array->last_var + opline->result.var);
 		}
-		ZEND_VM_SET_OPCODE_HANDLER(opline);
+		ZEND_VM_SET_OPCODE_HANDLER(opline);//设置handler
 		opline++;
 	}
 

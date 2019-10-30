@@ -137,18 +137,18 @@ ZEND_API const zend_internal_function zend_pass_function = {
 static zend_always_inline zend_vm_stack zend_vm_stack_new_page(size_t size, zend_vm_stack prev) {
 	zend_vm_stack page = (zend_vm_stack)emalloc(size);
 
-	page->top = ZEND_VM_STACK_ELEMENTS(page);
-	page->end = (zval*)((char*)page + size);
+	page->top = ZEND_VM_STACK_ELEMENTS(page); // 起始地址
+	page->end = (zval*)((char*)page + size); // 结束地址
 	page->prev = prev;
 	return page;
 }
 
 ZEND_API void zend_vm_stack_init(void)
 {
-	EG(vm_stack) = zend_vm_stack_new_page(ZEND_VM_STACK_PAGE_SIZE(0 /* main stack */), NULL);
+	EG(vm_stack) = zend_vm_stack_new_page(ZEND_VM_STACK_PAGE_SIZE(0 /* main stack */), NULL); // main stack 16K*sizeof(zval)
 	EG(vm_stack)->top++;
-	EG(vm_stack_top) = EG(vm_stack)->top;
-	EG(vm_stack_end) = EG(vm_stack)->end;
+	EG(vm_stack_top) = EG(vm_stack)->top; // 栈顶地址, 储存的是高地址
+	EG(vm_stack_end) = EG(vm_stack)->end; // 栈底地址
 }
 
 ZEND_API void zend_vm_stack_destroy(void)
@@ -378,6 +378,12 @@ static zend_always_inline zval *_get_zval_ptr_cv_BP_VAR_W(const zend_execute_dat
 	return ret;
 }
 
+/**
+ * 根据偏移量从execute_data上获取zval的地址
+ * @param execute_data
+ * @param var 偏移量
+ * @return
+ */
 static zend_always_inline zval *_get_zval_ptr_cv_undef_BP_VAR_W(const zend_execute_data *execute_data, uint32_t var)
 {
 	return EX_VAR(var);
@@ -2163,7 +2169,7 @@ static zend_always_inline void i_init_func_execute_data(zend_execute_data *execu
 		EX(opline) += num_args;
 	}
 
-	/* Initialize CV variables (skip arguments) */
+	/* Initialize CV variables (skip arguments) */ // 初始化cv变量 置为null
 	if (EXPECTED((int)num_args < op_array->last_var)) {
 		zval *var = EX_VAR_NUM(num_args);
 		zval *end = EX_VAR_NUM(op_array->last_var);

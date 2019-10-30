@@ -146,7 +146,7 @@ static void gc_trace_ref(zend_refcounted *ref) {
 	}
 }
 #endif
-
+// 从root链表中移除当前root, 并且插入到unused开头
 static zend_always_inline void gc_remove_from_roots(gc_root_buffer *root)
 {
 	root->next->prev = root->prev;
@@ -155,7 +155,7 @@ static zend_always_inline void gc_remove_from_roots(gc_root_buffer *root)
 	GC_G(unused) = root;
 	GC_BENCH_DEC(root_buf_length);
 }
-
+// 直接移除, 不插入unused中
 static zend_always_inline void gc_remove_from_additional_roots(gc_root_buffer *root)
 {
 	root->next->prev = root->prev;
@@ -239,7 +239,7 @@ ZEND_API void gc_reset(void)
 
 	if (GC_G(buf)) {
 		GC_G(unused) = NULL;
-		GC_G(first_unused) = GC_G(buf) + 1;
+		GC_G(first_unused) = GC_G(buf) + 1 // 第一个buf保留
 	} else {
 		GC_G(unused) = NULL;
 		GC_G(first_unused) = NULL;
@@ -271,17 +271,23 @@ ZEND_API void ZEND_FASTCALL gc_possible_root(zend_refcounted *ref)
 	ZEND_ASSERT(!GC_ADDRESS(GC_INFO(ref)));
 
 	GC_BENCH_INC(zval_possible_root);
-
+	// see init at main.main:2138
 	newRoot = GC_G(unused);
-	if (newRoot) {
+	if (newRoot) { // 释放后的root会被放入unused中
 		GC_G(unused) = newRoot->prev;
-	} else if (GC_G(first_unused) != GC_G(last_unused)) {
+	} else if (GC_G(first_unused) != GC_G(last_unused)) { // first_unused这里存着第一个没有用的root
 		newRoot = GC_G(first_unused);
 		GC_G(first_unused)++;
-	} else {
+	} else { // 没有可用的root了,触发gc
 		if (!GC_G(gc_enabled)) {
 			return;
 		}
+		/*
+		  一旦当前对象被root引用,那么它有可能会被回收,也有可能不被回收
+		  被回收的情况下,我们可以不做任何事
+		  未被回收的情况下,我们需要将它加入到root链表中,一旦被回收,这下面操作有可能会触发segement fault
+		  但是我们没有办法高效判断这个对象是否被回收,所以最简单的办法就是给对象引用次数加1,确保它一定不会被回收
+		*/
 		GC_REFCOUNT(ref)++;
 		gc_collect_cycles();
 		GC_REFCOUNT(ref)--;
@@ -306,9 +312,9 @@ ZEND_API void ZEND_FASTCALL gc_possible_root(zend_refcounted *ref)
 	}
 
 	GC_TRACE_SET_COLOR(ref, GC_PURPLE);
-	GC_INFO(ref) = (newRoot - GC_G(buf)) | GC_PURPLE;
+	GC_INFO(ref) = (newRoot - GC_G(buf)) | GC_PURPLE; // 相对起始root的偏移量 | 0xc000
 	newRoot->ref = ref;
-
+	// 将新的root加入到root双向链表,头插法
 	newRoot->next = GC_G(roots).next;
 	newRoot->prev = &GC_G(roots);
 	GC_G(roots).next->prev = newRoot;
@@ -364,7 +370,7 @@ ZEND_API void ZEND_FASTCALL gc_remove_from_buffer(zend_refcounted *ref)
 		GC_G(next_to_free) = root->next;
 	}
 }
-
+// 将对象和它的子对象标为黑色(清除颜色标记), 刚刚在gc_mark_grey-1的引用次数需要重新+1
 static void gc_scan_black(zend_refcounted *ref)
 {
 	HashTable *ht;
@@ -373,7 +379,7 @@ static void gc_scan_black(zend_refcounted *ref)
 
 tail_call:
 	ht = NULL;
-	GC_REF_SET_BLACK(ref);
+	GC_REF_SET_BLACK(ref); // 标为黑色, 实际上就是无色
 
 	if (GC_TYPE(ref) == IS_OBJECT && !(GC_FLAGS(ref) & IS_OBJ_FREE_CALLED)) {
 		zend_object_get_gc_t get_gc;
@@ -472,7 +478,7 @@ tail_call:
 		goto tail_call;
 	}
 }
-
+// 将当前root和它的子节点都标成灰色, 并且把所有子节点引用计数都减1, 如果当前根的引用计数变成了0, 那它肯定是垃圾(所以引用都来自自身)
 static void gc_mark_grey(zend_refcounted *ref)
 {
     HashTable *ht;
@@ -521,13 +527,14 @@ tail_call:
 				return;
 			}
 		} else if (GC_TYPE(ref) == IS_ARRAY) {
+			// 如果是符号表，那么不是垃圾
 			if (((zend_array*)ref) == &EG(symbol_table)) {
 				GC_REF_SET_BLACK(ref);
 				return;
 			} else {
 				ht = (zend_array*)ref;
 			}
-		} else if (GC_TYPE(ref) == IS_REFERENCE) {
+		} else if (GC_TYPE(ref) == IS_REFERENCE) { // 当类型是引用时,取里面的值
 			if (Z_REFCOUNTED(((zend_reference*)ref)->val)) {
 				if (UNEXPECTED(!EG(objects_store).object_buckets) &&
 					Z_TYPE(((zend_reference*)ref)->val) == IS_OBJECT) {
@@ -542,11 +549,11 @@ tail_call:
 		} else {
 			return;
 		}
-
+		// 遍历数组, 对每个子元素调用当前过程, 尽量使用尾递归优化
 		if (!ht->nNumUsed) return;
 		p = ht->arData;
 		end = p + ht->nNumUsed;
-		while (1) {
+		while (1) { // 找到最后一个引用计数类型的子元素
 			end--;
 			zv = &end->val;
 			if (Z_TYPE_P(zv) == IS_INDIRECT) {
@@ -557,7 +564,7 @@ tail_call:
 			}
 			if (p == end) return;
 		}
-		while (p != end) {
+		while (p != end) { // 找到第一个是引用类型的子元素, 如果有元素, 直接递归, 因为这里要保存上下文(因为还有它的兄弟需要处理)
 			zv = &p->val;
 			if (Z_TYPE_P(zv) == IS_INDIRECT) {
 				zv = Z_INDIRECT_P(zv);
@@ -574,7 +581,7 @@ tail_call:
 			}
 			p++;
 		}
-		zv = &p->val;
+		zv = &p->val; // 最后一个需要处理的子元素, 直接goto, 因为这里不需要保存上下文
 		if (Z_TYPE_P(zv) == IS_INDIRECT) {
 			zv = Z_INDIRECT_P(zv);
 		}
@@ -593,14 +600,14 @@ static void gc_mark_roots(void)
 {
 	gc_root_buffer *current = GC_G(roots).next;
 
-	while (current != &GC_G(roots)) {
-		if (GC_REF_GET_COLOR(current->ref) == GC_PURPLE) {
+	while (current != &GC_G(roots)) { // 最后一个root指向第一个root
+		if (GC_REF_GET_COLOR(current->ref) == GC_PURPLE) { // & 0xc000
 			gc_mark_grey(current->ref);
 		}
 		current = current->next;
 	}
 }
-
+// 遍历所有根对象和他们的子元素, 把引用次数为0的元素都标为白色
 static void gc_scan(zend_refcounted *ref)
 {
     HashTable *ht;
@@ -609,7 +616,7 @@ static void gc_scan(zend_refcounted *ref)
 
 tail_call:
 	if (GC_REF_GET_COLOR(ref) == GC_GREY) {
-		if (GC_REFCOUNT(ref) > 0) {
+		if (GC_REFCOUNT(ref) > 0) { // 引用次数大于0的对象和子对象不能清除
 			gc_scan_black(ref);
 		} else {
 			GC_REF_SET_COLOR(ref, GC_WHITE);
@@ -757,7 +764,7 @@ static void gc_add_garbage(zend_refcounted *ref)
 		GC_G(roots).next = buf;
 	}
 }
-
+// 将白色计数还原(因为后面真正触发释放垃圾时, 还会去减1), 并清除标记
 static int gc_collect_white(zend_refcounted *ref, uint32_t *flags)
 {
 	int count = 0;
@@ -785,12 +792,8 @@ tail_call:
 				zval *zv, *end;
 				zval tmp;
 
-#if 1
 				/* optimization: color is GC_BLACK (0) */
 				if (!GC_INFO(ref)) {
-#else
-				if (!GC_ADDRESS(GC_INFO(ref))) {
-#endif
 					gc_add_garbage(ref);
 				}
 				if (obj->handlers->dtor_obj &&
@@ -831,12 +834,8 @@ tail_call:
 				return count;
 			}
 		} else if (GC_TYPE(ref) == IS_ARRAY) {
-#if 1
-				/* optimization: color is GC_BLACK (0) */
-				if (!GC_INFO(ref)) {
-#else
-				if (!GC_ADDRESS(GC_INFO(ref))) {
-#endif
+			/* optimization: color is GC_BLACK (0) */
+			if (!GC_INFO(ref)) {
 				gc_add_garbage(ref);
 			}
 			ht = (zend_array*)ref;
@@ -894,17 +893,17 @@ tail_call:
 	}
 	return count;
 }
-
+// 还原黑色对象, 还原白色对象, 将白色对象加入to_free
 static int gc_collect_roots(uint32_t *flags)
 {
 	int count = 0;
 	gc_root_buffer *current = GC_G(roots).next;
-
+	// 从root链表中移除黑色
 	/* remove non-garbage from the list */
 	while (current != &GC_G(roots)) {
 		gc_root_buffer *next = current->next;
 		if (GC_REF_GET_COLOR(current->ref) == GC_BLACK) {
-			if (EXPECTED(GC_ADDRESS(GC_INFO(current->ref)) < GC_ROOT_BUFFER_MAX_ENTRIES)) {
+			if (EXPECTED(GC_ADDRESS(GC_INFO(current->ref)) < GC_ROOT_BUFFER_MAX_ENTRIES)) { // gc_address找到这个root相对第一个root的偏移量, 这里表示如果不是最后一个
 				gc_remove_from_roots(current);
 			} else {
 				gc_remove_from_additional_roots(current);
@@ -913,7 +912,7 @@ static int gc_collect_roots(uint32_t *flags)
 		}
 		current = next;
 	}
-
+	// 还原白色对象计数
 	current = GC_G(roots).next;
 	while (current != &GC_G(roots)) {
 		if (GC_REF_GET_COLOR(current->ref) == GC_WHITE) {
@@ -923,8 +922,8 @@ static int gc_collect_roots(uint32_t *flags)
 	}
 
 	/* relink remaining roots into list to free */
-	if (GC_G(roots).next != &GC_G(roots)) {
-		if (GC_G(to_free).next == &GC_G(to_free)) {
+	if (GC_G(roots).next != &GC_G(roots)) { // 将root链表内容插入to_free尾部
+		if (GC_G(to_free).next == &GC_G(to_free)) { // to_free为空时
 			/* move roots into list to free */
 			GC_G(to_free).next = GC_G(roots).next;
 			GC_G(to_free).prev = GC_G(roots).prev;
@@ -1049,7 +1048,7 @@ tail_call:
 ZEND_API int zend_gc_collect_cycles(void)
 {
 	int count = 0;
-
+	// 当链表不为空时
 	if (GC_G(roots).next != &GC_G(roots)) {
 		gc_root_buffer *current, *next, *orig_next_to_free;
 		zend_refcounted *p;
@@ -1069,9 +1068,10 @@ ZEND_API int zend_gc_collect_cycles(void)
 		GC_G(gc_active) = 1;
 
 		GC_TRACE("Marking roots");
+		// 如果是紫色，标记成灰色
 		gc_mark_roots();
 		GC_TRACE("Scanning roots");
-		gc_scan_roots();
+		gc_scan_roots(); // 垃圾标成白色, 其他黑色
 
 #if ZEND_GC_DEBUG
 		orig_gc_full = GC_G(gc_full);
@@ -1080,7 +1080,7 @@ ZEND_API int zend_gc_collect_cycles(void)
 
 		GC_TRACE("Collecting roots");
 		additional_buffer_snapshot = GC_G(additional_buffer);
-		count = gc_collect_roots(&gc_flags);
+		count = gc_collect_roots(&gc_flags);  //
 #if ZEND_GC_DEBUG
 		GC_G(gc_full) = orig_gc_full;
 #endif
@@ -1196,12 +1196,12 @@ ZEND_API int zend_gc_collect_cycles(void)
 			p = current->ref;
 			if (EXPECTED(current >= GC_G(buf) && current < GC_G(buf) + GC_ROOT_BUFFER_MAX_ENTRIES)) {
 				current->prev = GC_G(unused);
-				GC_G(unused) = current;
+				GC_G(unused) = current; // 节点都放入unused中
 			}
 			efree(p);
 			current = next;
 		}
-
+		// TODO
 		while (GC_G(additional_buffer) != additional_buffer_snapshot) {
 			gc_additional_buffer *next = GC_G(additional_buffer)->next;
 			efree(GC_G(additional_buffer));

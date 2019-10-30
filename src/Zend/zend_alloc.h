@@ -37,11 +37,11 @@
 # define ZEND_MM_ALIGNMENT Z_L(4)
 # define ZEND_MM_ALIGNMENT_LOG2 Z_L(2)
 #endif
-
+// 111...1000
 #define ZEND_MM_ALIGNMENT_MASK ~(ZEND_MM_ALIGNMENT - Z_L(1))
-
+// 按8对齐的大小
 #define ZEND_MM_ALIGNED_SIZE(size)	(((size) + ZEND_MM_ALIGNMENT - Z_L(1)) & ZEND_MM_ALIGNMENT_MASK)
-
+// 按alignment对齐的大小
 #define ZEND_MM_ALIGNED_SIZE_EX(size, alignment) \
 	(((size) + ((alignment) - Z_L(1))) & ~((alignment) - Z_L(1)))
 

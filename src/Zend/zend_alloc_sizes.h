@@ -30,7 +30,7 @@
 
 /* num, size, count, pages */
 #define ZEND_MM_BINS_INFO(_, x, y) \
-	_( 0,    8,  512, 1, x, y) \
+	_( 0,    8,  512, 1, x, y) \ // => _BIN_DATA_SIZE( 0,    8,  512, 1, x, y) => 8
 	_( 1,   16,  256, 1, x, y) \
 	_( 2,   24,  170, 1, x, y) \
 	_( 3,   32,  128, 1, x, y) \

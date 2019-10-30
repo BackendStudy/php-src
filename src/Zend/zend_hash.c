@@ -748,7 +748,7 @@ add_to_packed:
 		/* incremental initialization of empty Buckets */
 		if ((flag & (HASH_ADD_NEW|HASH_ADD_NEXT)) == (HASH_ADD_NEW|HASH_ADD_NEXT)) {
 			ht->nNumUsed = h + 1;
-		} else if (h >= ht->nNumUsed) {
+		} else if (h >= ht->nNumUsed) { // 插入数字,并且插入的元素比之前的大至少1,把中间的元素置为undef: 例arr[0] = 1 arr[2] = 2,那么arr[1]为undef
 			if (h > ht->nNumUsed) {
 				Bucket *q = ht->arData + ht->nNumUsed;
 				while (q != p) {
@@ -756,14 +756,14 @@ add_to_packed:
 					q++;
 				}
 			}
-			ht->nNumUsed = h + 1;
+			ht->nNumUsed = h + 1; // nNumUsed为最大数字下标+1
 		}
 		ht->nNumOfElements++;
 		if (ht->nInternalPointer == HT_INVALID_IDX) {
 			ht->nInternalPointer = h;
 		}
 		zend_hash_iterators_update(ht, HT_INVALID_IDX, h);
-		if ((zend_long)h >= (zend_long)ht->nNextFreeElement) {
+		if ((zend_long)h >= (zend_long)ht->nNextFreeElement) { // nNextFreeElement为最大数字下标+1
 			ht->nNextFreeElement = h < ZEND_LONG_MAX ? h + 1 : ZEND_LONG_MAX;
 		}
 		p->h = h;
