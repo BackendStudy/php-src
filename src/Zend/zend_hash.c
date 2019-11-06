@@ -171,7 +171,7 @@ static const uint32_t uninitialized_bucket[-HT_MIN_MASK] =
 ZEND_API void ZEND_FASTCALL _zend_hash_init(HashTable *ht, uint32_t nSize, dtor_func_t pDestructor, zend_bool persistent ZEND_FILE_LINE_DC)
 {
 	GC_REFCOUNT(ht) = 1;
-	GC_TYPE_INFO(ht) = IS_ARRAY;
+	GC_TYPE_INFO(ht) = IS_ARRAY;//设置数据类型为数组
 	ht->u.flags = (persistent ? HASH_FLAG_PERSISTENT : 0) | HASH_FLAG_APPLY_PROTECTION | HASH_FLAG_STATIC_KEYS;
 	ht->nTableMask = HT_MIN_MASK;
 	HT_SET_DATA_ADDR(ht, &uninitialized_bucket);
@@ -180,7 +180,7 @@ ZEND_API void ZEND_FASTCALL _zend_hash_init(HashTable *ht, uint32_t nSize, dtor_
 	ht->nInternalPointer = HT_INVALID_IDX;
 	ht->nNextFreeElement = 0;
 	ht->pDestructor = pDestructor;
-	ht->nTableSize = zend_hash_check_size(nSize);
+	ht->nTableSize = zend_hash_check_size(nSize);//初始值为8
 }
 
 static void ZEND_FASTCALL zend_hash_packed_grow(HashTable *ht)
@@ -589,24 +589,25 @@ static zend_always_inline zval *_zend_hash_add_or_update_i(HashTable *ht, zend_s
 	ZEND_HASH_IF_FULL_DO_RESIZE(ht);		/* If the Hash table is full, resize it */
 
 add_to_hash:
-	idx = ht->nNumUsed++;
-	ht->nNumOfElements++;
+	idx = ht->nNumUsed++;//数组已使用 Bucket 数 +1
+	ht->nNumOfElements++;// 数组有效元素数目 +1
 	if (ht->nInternalPointer == HT_INVALID_IDX) {
 		ht->nInternalPointer = idx;
 	}
 	zend_hash_iterators_update(ht, HT_INVALID_IDX, idx);
-	p = ht->arData + idx;
-	p->key = key;
+	p = ht->arData + idx;// p 为新元素对应的 Bucket的指针
+	p->key = key;//设置键名
 	if (!ZSTR_IS_INTERNED(key)) {
 		zend_string_addref(key);
 		ht->u.flags &= ~HASH_FLAG_STATIC_KEYS;
 		zend_string_hash_val(key);
 	}
-	p->h = h = ZSTR_H(key);
-	ZVAL_COPY_VALUE(&p->val, pData);
-	nIndex = h | ht->nTableMask;
-	Z_NEXT(p->val) = HT_HASH(ht, nIndex);
-	HT_HASH(ht, nIndex) = HT_IDX_TO_HASH(idx);
+	p->h = h = ZSTR_H(key);//根据key计算h值
+	ZVAL_COPY_VALUE(&p->val, pData);//将pData赋值给Bucket的val
+	nIndex = h | ht->nTableMask;//计算映射下标
+ 
+	Z_NEXT(p->val) = HT_HASH(ht, nIndex);//将原映射表中的内容赋值给新元素变量值的 u2.next成员,用于以后解决哈希冲突
+	HT_HASH(ht, nIndex) = HT_IDX_TO_HASH(idx); //将映射表中的值设为 idx
 
 	return &p->val;
 }
@@ -852,20 +853,20 @@ static void ZEND_FASTCALL zend_hash_do_resize(HashTable *ht)
 	HT_ASSERT(GC_REFCOUNT(ht) == 1);
 
 	if (ht->nNumUsed > ht->nNumOfElements + (ht->nNumOfElements >> 5)) { /* additional term is there to amortize the cost of compaction */
-		zend_hash_rehash(ht);
+		zend_hash_rehash(ht);//重新索引
 	} else if (ht->nTableSize < HT_MAX_SIZE) {	/* Let's double the table size */
 		void *new_data, *old_data = HT_GET_DATA_ADDR(ht);
 		uint32_t nSize = ht->nTableSize + ht->nTableSize;
 		Bucket *old_buckets = ht->arData;
 
-		new_data = pemalloc(HT_SIZE_EX(nSize, -nSize), ht->u.flags & HASH_FLAG_PERSISTENT);
+		new_data = pemalloc(HT_SIZE_EX(nSize, -nSize), ht->u.flags & HASH_FLAG_PERSISTENT);//申请新数组内存
 		ht->nTableSize = nSize;
 		ht->nTableMask = -ht->nTableSize;
 		HT_SET_DATA_ADDR(ht, new_data);
-		memcpy(ht->arData, old_buckets, sizeof(Bucket) * ht->nNumUsed);
-		pefree(old_data, ht->u.flags & HASH_FLAG_PERSISTENT);
-		zend_hash_rehash(ht);
-	} else {
+		memcpy(ht->arData, old_buckets, sizeof(Bucket) * ht->nNumUsed);// 复制原数组到新数组
+		pefree(old_data, ht->u.flags & HASH_FLAG_PERSISTENT);// 释放原数组内存
+		zend_hash_rehash(ht);// 重新索引
+	} else {// 数组大小超出内存限制
 		zend_error_noreturn(E_ERROR, "Possible integer overflow in memory allocation (%u * %zu + %zu)", ht->nTableSize * 2, sizeof(Bucket) + sizeof(uint32_t), sizeof(Bucket));
 	}
 }
