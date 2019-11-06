@@ -91,7 +91,7 @@ struct _zend_array {
 * nTableMask :这个值在散列函数根据key的hash code映射元素的存储位置时用到,它的值实际就是nTableSize的负数,用位运算表示的话则为nTableMask=~nTableSize+1.
 * nNumUsed,NNumOfElements:这两个成员的含义看起来非常相似,但是他们代表的含义是不同的,nNumUsed是指数组当前是用的Bucket数,但是这些Bucket并不都是数组的有效元素,比如当我们unset一个数组元素时并不会马上将其从数组中移除,而只是将这个元素的类型标为IS_UNDEF;nNumOfElements则是数组中有效元素的数量,所以nNumOfElements<=nNumUsed
 * nNextFreeElement:当增加一个没有键值的元素时,如$arr[]='abc',nNextFreeElement就是该元素的键值,从0开始,每次这样赋值时就自增1
-* 
+
 HashTable结构中的 Bucket 即储存元素的数组，arData 指向数组的起始位置，使用映射函数对 key 值进行映射后可以得到偏移值，通过偏移值即可定位到元素存在哪个Bucket中。
 Bucket 的数据结构如下：
 
