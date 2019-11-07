@@ -485,7 +485,7 @@ static zend_always_inline Bucket *zend_hash_find_bucket(const HashTable *ht, zen
 		} else if (EXPECTED(p->h == h) &&
 		     EXPECTED(p->key) &&
 		     EXPECTED(ZSTR_LEN(p->key) == ZSTR_LEN(key)) &&
-		     EXPECTED(memcmp(ZSTR_VAL(p->key), ZSTR_VAL(key), ZSTR_LEN(key)) == 0)) {
+		     EXPECTED(memcmp(ZSTR_VAL(p->key), ZSTR_VAL(key), ZSTR_LEN(key)) == 0)) {//???
 			return p;
 		}
 		idx = Z_NEXT(p->val);
@@ -709,40 +709,39 @@ static zend_always_inline zval *_zend_hash_index_add_or_update_i(HashTable *ht, 
 
 	IS_CONSISTENT(ht);
 	HT_ASSERT(GC_REFCOUNT(ht) == 1);
-
-	if (UNEXPECTED(!(ht->u.flags & HASH_FLAG_INITIALIZED))) {
+	if (UNEXPECTED(!(ht->u.flags & HASH_FLAG_INITIALIZED))) {//初始化插入第一个元素的时候
 		CHECK_INIT(ht, h < ht->nTableSize);
-		if (h < ht->nTableSize) {
+		if (h < ht->nTableSize) {//如果键值小于nTableSize,则增加packed数组元素()
 			p = ht->arData + h;
 			goto add_to_packed;
 		}
-		goto add_to_hash;
+		goto add_to_hash;//大于nTableSize,则添加一个hash数组元素
 	} else if (ht->u.flags & HASH_FLAG_PACKED) {
 		if (h < ht->nNumUsed) {
 			p = ht->arData + h;
-			if (Z_TYPE(p->val) != IS_UNDEF) {
+			if (Z_TYPE(p->val) != IS_UNDEF) {//如果该bucket已经有值了,对原有Bucket进行更新操作
 				if (flag & HASH_ADD) {
 					return NULL;
 				}
 				if (ht->pDestructor) {
-					ht->pDestructor(&p->val);
+					ht->pDestructor(&p->val);//销毁旧的
 				}
-				ZVAL_COPY_VALUE(&p->val, pData);
+				ZVAL_COPY_VALUE(&p->val, pData);//拷贝覆盖
 				if ((zend_long)h >= (zend_long)ht->nNextFreeElement) {
 					ht->nNextFreeElement = h < ZEND_LONG_MAX ? h + 1 : ZEND_LONG_MAX;
 				}
 				return &p->val;
 			} else { /* we have to keep the order :( */
-				goto convert_to_hash;
+				goto convert_to_hash;//转换为hash_array
 			}
 		} else if (EXPECTED(h < ht->nTableSize)) {
 			p = ht->arData + h;
 		} else if ((h >> 1) < ht->nTableSize &&
-		           (ht->nTableSize >> 1) < ht->nNumOfElements) {
-			zend_hash_packed_grow(ht);
+		           (ht->nTableSize >> 1) < ht->nNumOfElements) {//都乘以2更好理解,插入一个key不大于nTableSize两倍的元素
+			zend_hash_packed_grow(ht);//packed_array扩容
 			p = ht->arData + h;
 		} else {
-			goto convert_to_hash;
+			goto convert_to_hash;//插入一个key大于nTableSize两倍的元素
 		}
 
 add_to_packed:
@@ -810,7 +809,7 @@ add_to_hash:
 	p->key = NULL;
 	nIndex = h | ht->nTableMask;
 	ZVAL_COPY_VALUE(&p->val, pData);
-	Z_NEXT(p->val) = HT_HASH(ht, nIndex);
+	Z_NEXT(p->val) = HT_HASH(ht, nIndex);//(zval).u2.next
 	HT_HASH(ht, nIndex) = HT_IDX_TO_HASH(idx);
 
 	return &p->val;
@@ -873,7 +872,7 @@ static void ZEND_FASTCALL zend_hash_do_resize(HashTable *ht)
 
 ZEND_API int ZEND_FASTCALL zend_hash_rehash(HashTable *ht)
 {
-	Bucket *p;
+	Bucket *p;n
 	uint32_t nIndex, i;
 
 	IS_CONSISTENT(ht);
